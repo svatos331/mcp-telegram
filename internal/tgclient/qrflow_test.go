@@ -68,7 +68,7 @@ func awaitPrompt(t *testing.T, f *QRFlow) {
 func TestQRFlowPasswordLoopSpendsAttemptBudget(t *testing.T) {
 	wrong := tgerr.New(400, "PASSWORD_HASH_INVALID")
 	f, res := runPasswordLoop(t, func(context.Context, string) (*tg.AuthAuthorization, error) {
-		return nil, wrong
+		return nil, fmt.Errorf("fake password check: %w", wrong)
 	})
 
 	for attempt := range qrPasswordAttempts {

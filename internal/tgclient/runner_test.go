@@ -340,7 +340,9 @@ func startOnCluster(t *testing.T, logger *slog.Logger, route func(*cluster.Clust
 	go func() { up <- c.Up(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-up
+		if err := <-up; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("stopping test cluster: %v", err)
+		}
 	})
 	select {
 	case <-c.Ready():

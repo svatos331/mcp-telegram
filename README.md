@@ -600,7 +600,7 @@ Telegram credentials are unset.
 CI runs ordinary tests on Linux and macOS, the race detector, package coverage
 gates, vet, golangci-lint, govulncheck, a Windows cross-build, and a pinned
 Docker build followed by a HIGH/CRITICAL vulnerability scan. The release image
-uses a checksummed Go 1.27.1 toolchain and Alpine 3.24 with security updates.
+uses digest-pinned Go 1.27.3 and Alpine 3.24.3 images with security updates.
 
 ## License
 

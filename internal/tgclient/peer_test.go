@@ -48,7 +48,7 @@ func (f fakeInvoker) Invoke(_ context.Context, input bin.Encoder, output bin.Dec
 		return nil
 	case *tg.ChannelsGetChannelsRequest:
 		if f.channels == nil {
-			return tgerr.New(400, "CHANNEL_INVALID")
+			return fmt.Errorf("fake channel lookup: %w", tgerr.New(400, "CHANNEL_INVALID"))
 		}
 		res, err := f.channels(req.ID)
 		if err != nil {

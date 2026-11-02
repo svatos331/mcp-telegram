@@ -746,8 +746,8 @@ func TestUserPoolClosesEvictedAssemblyOffTheRequestPath(t *testing.T) {
 	closed := make(chan error, 1)
 	go func() { closed <- pool.Close() }()
 	select {
-	case <-closed:
-		t.Fatal("Close returned before the evicted assembly finished closing")
+	case err := <-closed:
+		t.Fatalf("Close returned before the evicted assembly finished closing: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(unblock)

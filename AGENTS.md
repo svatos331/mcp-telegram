@@ -77,8 +77,8 @@ make fmt               # golangci-lint fmt
   may prompt. Between steps run targeted tests (`go test ./internal/<pkg>/...`);
   run the full suite once at the end.
 - **`!darwin` files aren't linted locally on macOS.** Before pushing, run
-  `GOOS=linux golangci-lint run ./...` to match CI (ubuntu, Go 1.27,
-  golangci-lint v2.14.0).
+  `GOOS=linux golangci-lint run ./...` to match CI (ubuntu; toolchain and
+  linter versions are defined in `go.mod` and `.github/workflows/ci.yml`).
 - **Manual `run` can hang silently.** A zero-log hang usually means another
   process holds the same Telegram session — kill strays before blaming the change.
 - **Startup failures don't exit over stdio.** They go through `startBlocked`

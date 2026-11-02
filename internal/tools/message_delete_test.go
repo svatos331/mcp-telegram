@@ -111,7 +111,7 @@ func (f *deleteInvoker) Invoke(_ context.Context, input bin.Encoder, output bin.
 		output.(*tg.MessagesChatsBox).Chats = &tg.MessagesChats{Chats: []tg.ChatClass{f.chat()}}
 	case *tg.ChannelsGetChannelsRequest:
 		if !f.channel {
-			return tgerr.New(400, "CHANNEL_INVALID")
+			return fmt.Errorf("fake channel lookup: %w", tgerr.New(400, "CHANNEL_INVALID"))
 		}
 		output.(*tg.MessagesChatsBox).Chats = &tg.MessagesChats{Chats: []tg.ChatClass{f.chat()}}
 	case *tg.MessagesGetMessagesRequest:
