@@ -73,6 +73,17 @@ mcp-telegram login --phone +1234567890
 You'll be prompted for the verification code sent by Telegram and, when the
 account has two-step verification enabled, its 2FA password.
 
+If the code never arrives, log in with a QR code instead — no phone number or
+code needed:
+
+```bash
+mcp-telegram login --qr
+```
+
+The QR code is drawn in the terminal. Scan it from a signed-in Telegram app
+(**Settings → Devices → Link Desktop Device**); it refreshes on its own until
+scanned. The 2FA password, if any, is then asked for in the terminal.
+
 ### 4. Configure MCP Client
 
 #### Claude Desktop
@@ -289,6 +300,9 @@ mcp-telegram run
 
 # Login to Telegram
 mcp-telegram login --phone +1234567890
+
+# Login by scanning a QR code from a signed-in Telegram app
+mcp-telegram login --qr
 
 # Logout and delete session
 mcp-telegram logout

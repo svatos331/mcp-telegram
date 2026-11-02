@@ -23,6 +23,7 @@ const (
 	APIHash              = "api-hash"
 	AllowedPaths         = "allowed-paths"
 	Phone                = "phone"
+	QR                   = "qr"
 	SummarizeProvider    = "summarize-provider"
 	SummarizeModel       = "summarize-model"
 	OllamaURL            = "ollama-url"
@@ -126,10 +127,16 @@ func AllowedPathsFlag() *cli.StringSliceFlag {
 
 func PhoneFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name:     Phone,
-		Aliases:  []string{"p"},
-		Usage:    "Phone number with country code (e.g., +1234567890)",
-		Required: true,
+		Name:    Phone,
+		Aliases: []string{"p"},
+		Usage:   "Phone number with country code (e.g., +1234567890); not needed with --qr",
+	}
+}
+
+func QRFlag() *cli.BoolFlag {
+	return &cli.BoolFlag{
+		Name:  QR,
+		Usage: "Log in by scanning a QR code with a signed-in Telegram app instead of entering a login code",
 	}
 }
 

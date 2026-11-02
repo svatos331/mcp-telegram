@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -210,10 +211,17 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					flags.APIIDFlag(),
 					flags.APIHashFlag(),
 					flags.PhoneFlag(),
+					flags.QRFlag(),
 					flags.FloodWaitMaxSecsFlag(),
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					// Phone is enforced by PhoneFlag(Required).
+					useQR, phone := cmd.Bool(flags.QR), cmd.String(flags.Phone)
+					if useQR && phone != "" {
+						return errors.New("--qr and --phone are mutually exclusive")
+					}
+					if !useQR && phone == "" {
+						return errors.New("--phone is required unless --qr is set")
+					}
 					cfg, err := resolveCredentials(cmd)
 					if err != nil {
 						return err
@@ -221,7 +229,10 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					if cfg.APIID == 0 || cfg.APIHash == "" {
 						return errMissingCredentials
 					}
-					return tgclient.Login(ctx, cfg, cmd.String(flags.Phone), cmd.Root().Reader, cmd.Root().Writer)
+					if useQR {
+						return tgclient.LoginQR(ctx, cfg, cmd.Root().Reader, cmd.Root().Writer)
+					}
+					return tgclient.Login(ctx, cfg, phone, cmd.Root().Reader, cmd.Root().Writer)
 				},
 			},
 			{
