@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,42 @@ func TestDriveQRLoginStopsOnCancel(t *testing.T) {
 
 	_, err := driveQRLogin(ctx, flow, newUserAuthenticator("", strings.NewReader(""), &out), &out, time.Millisecond)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestDriveQRLoginCancelsWhileReadingPassword(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	in, writer := io.Pipe()
+	t.Cleanup(func() {
+		require.NoError(t, in.Close())
+		require.NoError(t, writer.Close())
+	})
+	started := make(chan struct{})
+	flow := &scriptedQRFlow{snapshots: []QRSnapshot{{State: QRPasswordNeeded, AttemptsLeft: 3}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := driveQRLogin(ctx, flow, newUserAuthenticator("", &passwordReadNotifier{Reader: in, started: started}, io.Discard), io.Discard, time.Millisecond)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("QR login did not stop while waiting for the password")
+	}
+}
+
+type passwordReadNotifier struct {
+	io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (r *passwordReadNotifier) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	return r.Reader.Read(p) //nolint:wrapcheck // The notifier preserves the reader's result.
 }
 
 // TestRenderQRMatchesEncodedModules decodes the half-block drawing back into

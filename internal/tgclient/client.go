@@ -54,41 +54,54 @@ func newUserAuthenticator(phone string, in io.Reader, out io.Writer) userAuthent
 	return userAuthenticator{phone: phone, in: in, lines: bufio.NewReader(in), out: out}
 }
 
-func (a userAuthenticator) readLine(what string) (string, error) {
-	line, err := a.lines.ReadString('\n')
+func (a userAuthenticator) readLine(ctx context.Context, what string) (string, error) {
+	line, err := readInput(ctx, func() ([]byte, error) { return a.lines.ReadBytes('\n') })
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", what, err)
 	}
-	return strings.TrimSpace(line), nil
+	return strings.TrimSpace(string(line)), nil
 }
 
 func (a userAuthenticator) Phone(_ context.Context) (string, error) {
 	return a.phone, nil
 }
 
-func (a userAuthenticator) Code(_ context.Context, _ *tg.AuthSentCode) (string, error) {
+func (a userAuthenticator) Code(ctx context.Context, _ *tg.AuthSentCode) (string, error) {
 	_, _ = fmt.Fprint(a.out, "Enter login code: ")
-	return a.readLine("code")
+	return a.readLine(ctx, "code")
 }
 
-func (a userAuthenticator) Password(_ context.Context) (string, error) {
-	_, _ = fmt.Fprint(a.out, "Enter 2FA password: ")
-
-	// Use hidden input if running in a real terminal, otherwise fall back to
-	// plain line input. A terminal is line-buffered by the kernel, so the
-	// shared lines reader holds nothing past the code's newline here.
-	//nolint:gosec // G115: a file descriptor is always a small non-negative int; no realistic overflow.
+func (a userAuthenticator) Password(ctx context.Context) (string, error) {
+	//nolint:gosec // G115: file descriptors fit in int on supported platforms.
 	if inputFile, ok := a.in.(*os.File); ok && term.IsTerminal(int(inputFile.Fd())) {
-		password, err := term.ReadPassword(int(inputFile.Fd())) //nolint:gosec // G115: file descriptors fit in int on supported platforms.
-		_, _ = fmt.Fprintln(a.out)
-		if err != nil {
-			return "", fmt.Errorf("reading password: %w", err)
-		}
-		return string(password), nil
+		return a.terminalPassword(ctx, inputFile)
 	}
+	_, _ = fmt.Fprint(a.out, "Enter 2FA password: ")
+	return a.readLine(ctx, "password")
+}
 
-	// Fallback for non-TTY environments (e.g., IDE, piped input).
-	return a.readLine("password")
+func (a userAuthenticator) terminalPassword(ctx context.Context, in *os.File) (password string, err error) {
+	fd := int(in.Fd()) //nolint:gosec // G115: file descriptors fit in int on supported platforms.
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return "", fmt.Errorf("preparing password terminal: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, wrapIf(term.Restore(fd, state), "restoring password terminal"))
+	}()
+
+	// Only the read runs in the background: terminal setup and restoration
+	// must finish before returning, including on cancellation. Terminal handles
+	// Ctrl+C itself in raw mode and never echoes the password.
+	terminal := term.NewTerminal(struct {
+		io.Reader
+		io.Writer
+	}{contextReader{ctx: ctx, in: in}, a.out}, "")
+	password, err = terminal.ReadPassword("Enter 2FA password: ")
+	if err != nil {
+		return "", fmt.Errorf("reading password: %w", err)
+	}
+	return password, nil
 }
 
 func (a userAuthenticator) AcceptTermsOfService(_ context.Context, _ tg.HelpTermsOfService) error {
