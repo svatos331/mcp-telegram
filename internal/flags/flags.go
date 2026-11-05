@@ -19,33 +19,34 @@ const (
 
 // Flag name constants.
 const (
-	APIID                = "api-id"
-	APIHash              = "api-hash"
-	AllowedPaths         = "allowed-paths"
-	Phone                = "phone"
-	QR                   = "qr"
-	SummarizeProvider    = "summarize-provider"
-	SummarizeModel       = "summarize-model"
-	OllamaURL            = "ollama-url"
-	GeminiAPIKey         = "gemini-api-key"    //nolint:gosec // flag name, not a credential
-	AnthropicAPIKey      = "anthropic-api-key" //nolint:gosec // flag name, not a credential
-	SummarizeBatchTokens = "summarize-batch-tokens"
-	MediaMaxBytes        = "media-max-bytes"
-	TGRateLimitRPS       = "tg-rate-limit-rps"
-	PinnedRefreshSecs    = "pinned-refresh-seconds"
-	FloodWaitMaxSecs     = "flood-wait-max-seconds"
-	Variant              = "variant"
-	Transport            = "transport"
-	HTTPAddr             = "http-addr"
-	LogFormat            = "log-format"
-	LogLevel             = "log-level"
-	AuthIssuerURL        = "auth-issuer-url"
-	AuthAllowedUsers     = "auth-allowed-users"
-	AuthTokenKey         = "auth-token-key" //nolint:gosec // flag name, not a credential
-	AuthAllowedRedirects = "auth-allowed-redirects"
-	AuthSessionBucket    = "auth-session-bucket"
-	AuthSessionDir       = "auth-session-dir"
-	AuthTrustedProxyHops = "auth-trusted-proxy-hops"
+	APIID                 = "api-id"
+	APIHash               = "api-hash"
+	AllowedPaths          = "allowed-paths"
+	Phone                 = "phone"
+	QR                    = "qr"
+	SummarizeProvider     = "summarize-provider"
+	SummarizeModel        = "summarize-model"
+	OllamaURL             = "ollama-url"
+	GeminiAPIKey          = "gemini-api-key"    //nolint:gosec // flag name, not a credential
+	AnthropicAPIKey       = "anthropic-api-key" //nolint:gosec // flag name, not a credential
+	SummarizeBatchTokens  = "summarize-batch-tokens"
+	MediaMaxBytes         = "media-max-bytes"
+	TGRateLimitRPS        = "tg-rate-limit-rps"
+	PinnedRefreshSecs     = "pinned-refresh-seconds"
+	FloodWaitMaxSecs      = "flood-wait-max-seconds"
+	Variant               = "variant"
+	Transport             = "transport"
+	HTTPAddr              = "http-addr"
+	LogFormat             = "log-format"
+	LogLevel              = "log-level"
+	AuthIssuerURL         = "auth-issuer-url"
+	AuthAllowedUsers      = "auth-allowed-users"
+	AuthTokenKey          = "auth-token-key" //nolint:gosec // flag name, not a credential
+	AuthAllowedRedirects  = "auth-allowed-redirects"
+	AuthFirestoreProject  = "auth-firestore-project"
+	AuthFirestoreDatabase = "auth-firestore-database"
+	AuthSessionDir        = "auth-session-dir"
+	AuthTrustedProxyHops  = "auth-trusted-proxy-hops"
 )
 
 // DefaultPinnedRefreshSeconds is the default polling interval for the
@@ -293,11 +294,19 @@ func AuthAllowedRedirectsFlag() *cli.StringSliceFlag {
 	}
 }
 
-func AuthSessionBucketFlag() *cli.StringFlag {
+func AuthFirestoreProjectFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name:    AuthSessionBucket,
-		Usage:   "GCS bucket for per-user Telegram sessions (exactly one HTTP session backend is required)",
-		Sources: cli.EnvVars("MCP_AUTH_SESSION_BUCKET"),
+		Name:    AuthFirestoreProject,
+		Usage:   "Google Cloud project for HTTP session storage (use with --auth-firestore-database, instead of --auth-session-dir)",
+		Sources: cli.EnvVars("MCP_AUTH_FIRESTORE_PROJECT"),
+	}
+}
+
+func AuthFirestoreDatabaseFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    AuthFirestoreDatabase,
+		Usage:   "Firestore database for HTTP sessions and OAuth state (explicit database ID required)",
+		Sources: cli.EnvVars("MCP_AUTH_FIRESTORE_DATABASE"),
 	}
 }
 

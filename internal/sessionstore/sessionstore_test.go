@@ -153,7 +153,11 @@ func newTestFS(t *testing.T) *FS {
 // backends returns every storage backend, fresh and empty.
 func backends(t *testing.T) map[string]backend {
 	t.Helper()
-	return map[string]backend{"fs": newTestFS(t), "gcs": NewTestGCS(t)}
+	all := map[string]backend{"fs": newTestFS(t)}
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") != "" {
+		all["firestore"] = NewTestFirestore(t)
+	}
+	return all
 }
 
 func TestBackendSessionLifecycle(t *testing.T) {

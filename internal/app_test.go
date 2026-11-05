@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"cloud.google.com/go/firestore"
 	"github.com/urfave/cli/v3"
 
 	"github.com/tolmachov/mcp-telegram/internal/authsrv"
@@ -19,8 +20,7 @@ import (
 )
 
 // runBuildAuthOptions parses args through a cli.Command carrying the auth
-// flags and returns whatever buildAuthOptions produced, exercising the real
-// flag → config translation.
+// flags and registers storage cleanup, exercising the real flag → config translation.
 func runBuildAuthOptions(t *testing.T, args ...string) (*authsrv.Config, sessionstore.Store, error) {
 	t.Helper()
 	var (
@@ -33,10 +33,18 @@ func runBuildAuthOptions(t *testing.T, args ...string) (*authsrv.Config, session
 		Flags: []cli.Flag{
 			flags.AuthIssuerURLFlag(), flags.AuthAllowedUsersFlag(),
 			flags.AuthTokenKeyFlag(), flags.AuthAllowedRedirectsFlag(),
-			flags.AuthSessionBucketFlag(), flags.AuthSessionDirFlag(), flags.AuthTrustedProxyHopsFlag(),
+			flags.AuthFirestoreProjectFlag(), flags.AuthFirestoreDatabaseFlag(), flags.AuthSessionDirFlag(), flags.AuthTrustedProxyHopsFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			gotCfg, gotStore, gotErr = buildAuthOptions(ctx, cmd)
+			var cleanup func() error
+			gotCfg, gotStore, cleanup, gotErr = buildAuthOptions(ctx, cmd)
+			if cleanup != nil {
+				t.Cleanup(func() {
+					if err := cleanup(); err != nil {
+						t.Errorf("storage cleanup: %v", err)
+					}
+				})
+			}
 			return nil
 		},
 	}
@@ -110,6 +118,44 @@ func TestBuildAuthOptionsEncryptsSessions(t *testing.T) {
 	got, err := store.Session(user, sid, sessionKey).LoadSession(t.Context())
 	if err != nil || string(got) != string(plaintext) {
 		t.Errorf("round trip = (%q, %v), want (%q, nil)", got, err, plaintext)
+	}
+}
+
+func TestBuildAuthOptionsFirestore(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("requires Firestore emulator")
+	}
+	project := "demo-wiring-" + sessionstore.NewSID()
+	_, store, err := runBuildAuthOptions(t, "--auth-issuer-url", "https://mcp.example.com", "--auth-allowed-users", "123", "--auth-token-key", testKey(t), "--auth-firestore-project", project, "--auth-firestore-database", "(default)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := sessionstore.NewSID()
+	key := sessionstore.NewSessionKey()
+	plaintext := []byte("SUPER-SECRET-SESSION-BYTES")
+	if err := store.Session(123, sid, key).StoreSession(t.Context(), plaintext); err != nil {
+		t.Fatal(err)
+	}
+	client, err := firestore.NewClient(t.Context(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	doc, err := client.Collection("sessions-v3").Doc("123." + sid + ".bin").Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := doc.DataAt("data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, ok := raw.([]byte)
+	if !ok || strings.Contains(string(blob), string(plaintext)) {
+		t.Fatal("Firestore must contain ciphertext bytes, not plaintext")
+	}
+	got, err := store.Session(123, sid, key).LoadSession(t.Context())
+	if err != nil || string(got) != string(plaintext) {
+		t.Fatalf("encrypted round trip failed: %v", err)
 	}
 }
 
@@ -190,12 +236,19 @@ func TestBuildAuthOptionsValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("both bucket and dir", func(t *testing.T) {
-		args := withStorage("--auth-session-dir", t.TempDir(), "--auth-session-bucket", "b")
+	t.Run("both Firestore and dir", func(t *testing.T) {
+		args := withStorage("--auth-session-dir", t.TempDir(), "--auth-firestore-project", "p", "--auth-firestore-database", "d")
 		if _, _, err := runBuildAuthOptions(t, args...); err == nil {
-			t.Error("accepted both --auth-session-dir and --auth-session-bucket")
+			t.Error("accepted both Firestore and local storage")
 		}
 	})
+	for _, flag := range []string{"--auth-firestore-project", "--auth-firestore-database"} {
+		t.Run("incomplete "+flag, func(t *testing.T) {
+			if _, _, err := runBuildAuthOptions(t, withStorage(flag, "p")...); err == nil {
+				t.Error("accepted incomplete Firestore configuration")
+			}
+		})
+	}
 
 	t.Run("bad token key", func(t *testing.T) {
 		args := []string{
@@ -208,7 +261,7 @@ func TestBuildAuthOptionsValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("neither bucket nor dir", func(t *testing.T) {
+	t.Run("neither Firestore nor dir", func(t *testing.T) {
 		if _, _, err := runBuildAuthOptions(t, baseArgs...); err == nil {
 			t.Error("accepted HTTP auth with no session storage")
 		}

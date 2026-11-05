@@ -17,6 +17,7 @@ mcp-telegram.exe
 Thumbs.db
 
 # Test artifacts
+__pycache__/
 *.test
 *.out
 coverage.html
@@ -30,4 +31,4 @@ research/
 deploy/cloudrun.yaml
 
 # Personal automation, not part of the project
-/Taskfile.yml
+/Taskfile.local.yml

@@ -1,0 +1,143 @@
+version: '3'
+
+includes:
+  local:
+    taskfile: ./Taskfile.local.yml
+    optional: true
+
+env:
+  # Match the production toolchain rather than a newer host installation.
+  GOTOOLCHAIN: go{{.GO_VERSION}}
+
+vars:
+  BINARY: mcp-telegram
+  MODULE: github.com/tolmachov/mcp-telegram
+  # Keep aligned with go.mod and the Dockerfile.
+  GO_VERSION: 1.27.3
+  LINT_VERSION: v2.15.0
+  LINT_BIN: .gocache/golangci-lint-{{.LINT_VERSION}}-go{{.GO_VERSION}}
+  TRIVY_VERSION: 0.76.1
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  LDFLAGS: '-s -w -X {{.MODULE}}/internal.Version={{.VERSION}}'
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the binary with version metadata
+    cmds:
+      - go build -ldflags={{.LDFLAGS | q}} -o {{.BINARY | q}} .
+
+  install:
+    desc: Install the binary with version metadata
+    cmds:
+      - go install -ldflags={{.LDFLAGS | q}} .
+
+  clean:
+    desc: Remove the local binary
+    cmds:
+      - rm -f -- {{.BINARY | q}} {{printf "%s.exe" .BINARY | q}}
+
+  test:
+    desc: Run unit tests without Docker or real Telegram credentials
+    cmds:
+      - go test ./...
+
+  test-firestore:
+    desc: Run uncached Docker-backed Firestore contracts
+    cmds:
+      - go test -tags=firestoreintegration -race -count=1 -p=1 ./...
+
+  test-integration:
+    desc: Run real-Telegram tests (requires credentials and TEST_* variables)
+    cmds:
+      - go test -tags integration ./test/...
+
+  lint-install:
+    internal: true
+    status:
+      - test -x {{.LINT_BIN | q}}
+    cmds:
+      - |
+        set -eu
+        dir=$(dirname {{.LINT_BIN | q}})
+        mkdir -p "$dir"
+        GOBIN="$(cd "$dir" && pwd)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.LINT_VERSION}}
+        mv "$dir/golangci-lint" {{.LINT_BIN | q}}
+
+  lint:
+    desc: Lint normal and Firestore-tagged code for the host and Linux
+    cmds:
+      - task: lint-install
+      - '{{.LINT_BIN | q}} run ./...'
+      - GOOS=linux {{.LINT_BIN | q}} run ./...
+      - '{{.LINT_BIN | q}} run --build-tags=firestoreintegration ./...'
+      - GOOS=linux {{.LINT_BIN | q}} run --build-tags=firestoreintegration ./...
+
+  fmt:
+    desc: Format Go code with the pinned golangci-lint
+    cmds:
+      - task: lint-install
+      - '{{.LINT_BIN | q}} fmt'
+
+  verify:
+    desc: Verify module checksums
+    cmds:
+      - go mod verify
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  vuln:
+    desc: Scan for reachable Go vulnerabilities
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  xbuild:
+    desc: Cross-compile for Windows
+    cmds:
+      - GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+
+  race:
+    desc: Run unit tests under the race detector
+    cmds:
+      - go test -race ./...
+
+  coverage:
+    desc: Self-test the coverage gate and enforce configured thresholds
+    cmds:
+      - ./scripts/check-coverage_test.sh
+      - ./scripts/check-coverage.sh
+
+  image:
+    desc: Build the local container and scan HIGH/CRITICAL vulnerabilities
+    cmds:
+      - docker build -t {{printf "%s:local" .BINARY | q}} .
+      - >-
+        docker run --rm
+        -v /var/run/docker.sock:/var/run/docker.sock
+        -v mcp-telegram-trivy-cache:/root/.cache/trivy
+        aquasec/trivy:{{.TRIVY_VERSION}} image
+        --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+        {{printf "%s:local" .BINARY | q}}
+
+  check:
+    desc: Run all automated release gates without deploying
+    # Keep sequential: tests may prompt for macOS Keychain access.
+    cmds:
+      - task: verify
+      - task: vet
+      - task: lint
+      - task: vuln
+      - task: xbuild
+      - task: test-firestore
+      - task: race
+      - task: coverage
+      - task: image

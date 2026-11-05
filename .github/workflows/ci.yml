@@ -24,6 +24,17 @@ jobs:
       - run: go mod verify
       - run: go test ./...
 
+  firestore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Docker-backed Firestore contracts
+        run: go test -tags=firestoreintegration -race -count=1 -p=1 ./...
+
   race:
     runs-on: ubuntu-latest
     steps:
@@ -62,6 +73,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.15.0
+          args: --build-tags=firestoreintegration
 
   windows-cross-build:
     runs-on: ubuntu-latest

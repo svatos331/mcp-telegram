@@ -3,10 +3,7 @@ package sessionstore
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -44,15 +41,8 @@ func TestGrantLoadsPersistedRecord(t *testing.T) {
 	const persisted = `{"sid":"0123456789abcdef0123456789abcdef","generation":2,"expires_at":"2026-01-02T03:04:05Z","revoked":true,"write_id":"W"}`
 	want := GrantRecord{Generation: 2, ExpiresAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Revoked: true, WriteID: "W"}
 
-	fs := newTestFS(t)
-	require.NoError(t, os.WriteFile(fs.grantPath(testGrantFamily), []byte(persisted), 0o600))
-	gcs := NewTestGCS(t)
-	w := gcs.bucket.Object(grantObjectName(testGrantFamily)).NewWriter(t.Context())
-	_, err := io.WriteString(w, persisted)
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-
-	for name, b := range map[string]backend{"fs": fs, "gcs": gcs} {
+	for name, b := range backends(t) {
+		writeRawGrant(t, b, testGrantFamily, persisted)
 		got, version, err := b.LoadGrant(t.Context(), testGrantFamily)
 		require.NoError(t, err, name)
 		assert.NotZero(t, version, name)
@@ -126,11 +116,9 @@ func writeRawGrant(t *testing.T, b backend, family, data string) {
 	switch b := b.(type) {
 	case *FS:
 		require.NoError(t, os.WriteFile(b.grantPath(family), []byte(data), 0o600))
-	case *GCS:
-		w := b.bucket.Object(grantObjectName(family)).NewWriter(t.Context())
-		_, err := io.WriteString(w, data)
+	case *Firestore:
+		_, err := b.client.Collection(firestoreGrants).Doc(family).Set(t.Context(), map[string]any{"data": []byte(data)})
 		require.NoError(t, err)
-		require.NoError(t, w.Close())
 	default:
 		t.Fatalf("unknown backend %T", b)
 	}
@@ -142,33 +130,6 @@ func redeemExpired(t *testing.T, store Store, family string, now time.Time) {
 	created, err := store.RedeemCode(t.Context(), family, now.Add(-time.Minute))
 	require.NoError(t, err)
 	require.True(t, created)
-}
-
-// failGrantReads answers every read of family's grant object with a 403, an
-// error the GCS client does not retry.
-func failGrantReads(family string) func(http.RoundTripper) http.RoundTripper {
-	return func(rt http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method == http.MethodGet && strings.Contains(req.URL.Path, family) {
-				return forbidden(req), nil
-			}
-			return rt.RoundTrip(req)
-		})
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-// forbidden is a 403 JSON API error response to req.
-func forbidden(req *http.Request) *http.Response {
-	return &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header:     http.Header{"Content-Type": {"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":403,"message":"injected"}}`)),
-		Request:    req,
-	}
 }
 
 // TestGrantSweepDeletesUndecodableRecord pins that a grant record that cannot
@@ -204,7 +165,7 @@ func TestGrantSweepDeletesUndecodableRecord(t *testing.T) {
 // read is left for the next sweep and reported in the error, without stalling
 // the sweep of the expired records after it.
 func TestGrantSweepSkipsUnreadableRecord(t *testing.T) {
-	for name, b := range map[string]backend{"fs": newTestFS(t), "gcs": newTestGCSWithTransport(t, failGrantReads(badFamily))} {
+	for name, b := range map[string]backend{"fs": newTestFS(t)} {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 			now := time.Now()
@@ -251,42 +212,6 @@ func TestGrantSweepStopsWhenContextEnds(t *testing.T) {
 			assert.NotZero(t, version)
 		})
 	}
-}
-
-// TestGCSGrantSweepStopsMidListingKeepingFailures pins that a context ending
-// part-way through a GCS sweep stops it without dropping what it already
-// collected: a real failure before the cancellation comes back joined with
-// the context's error.
-func TestGCSGrantSweepStopsMidListingKeepingFailures(t *testing.T) {
-	const cutFamily = "11111111111111111111111111111111"
-	ctx, cancel := context.WithCancel(t.Context())
-	b := newTestGCSWithTransport(t, func(rt http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodGet {
-				return rt.RoundTrip(req)
-			}
-			switch {
-			case strings.Contains(req.URL.Path, badFamily):
-				return forbidden(req), nil
-			case strings.Contains(req.URL.Path, cutFamily):
-				cancel()
-				return nil, context.Canceled
-			}
-			return rt.RoundTrip(req)
-		})
-	})
-	now := time.Now()
-	store := Encrypted(b, newCipher(t, testIssuer, newKey(t)))
-	for _, family := range []string{badFamily, cutFamily, testGrantFamily} {
-		redeemExpired(t, store, family, now)
-	}
-
-	_, err := b.SweepAuthState(ctx, now)
-	require.ErrorIs(t, err, context.Canceled)
-	require.ErrorContains(t, err, "sweeping grant "+badFamily, "a failure before the cancellation must be kept")
-	_, version, err := b.LoadGrant(t.Context(), testGrantFamily)
-	require.NoError(t, err)
-	assert.NotZero(t, version, "the sweep must stop at the cancellation")
 }
 
 // endsAfter is a context whose Err reports context.Canceled from its checks
@@ -525,8 +450,7 @@ func (s *lostResponse) StoreGrant(ctx context.Context, family string, grant Gran
 }
 
 // TestGrantWriteSurvivesLostResponse pins that a grant write which landed but
-// reported failure — a GCS retry answered 412 after the first attempt
-// committed, or a transport error after the commit — counts as done, instead
+// reported failure — a transport error after the commit — counts as done, instead
 // of reading the advanced record as someone else's and revoking the family.
 func TestGrantWriteSurvivesLostResponse(t *testing.T) {
 	failures := map[string]error{
@@ -561,34 +485,4 @@ func TestGrantWriteSurvivesLostResponse(t *testing.T) {
 			})
 		}
 	}
-}
-
-// TestGCSGrantSweepJoinsListingFailure pins that a listing that fails part-way
-// through a GCS sweep is reported together with the failures already seen.
-func TestGCSGrantSweepJoinsListingFailure(t *testing.T) {
-	b := newTestGCSWithTransport(t, func(rt http.RoundTripper) http.RoundTripper {
-		failRead := failGrantReads(badFamily)(rt)
-		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodGet || !strings.HasSuffix(req.URL.Path, "/o") {
-				return failRead.RoundTrip(req)
-			}
-			// A listing: serve one object per page and fail the second page.
-			query := req.URL.Query()
-			if query.Get("pageToken") != "" {
-				return forbidden(req), nil
-			}
-			query.Set("maxResults", "1")
-			req = req.Clone(req.Context())
-			req.URL.RawQuery = query.Encode()
-			return rt.RoundTrip(req)
-		})
-	})
-	now := time.Now()
-	store := Encrypted(b, newCipher(t, testIssuer, newKey(t)))
-	redeemExpired(t, store, badFamily, now)
-	redeemExpired(t, store, testGrantFamily, now)
-
-	_, err := store.SweepAuthState(t.Context(), now)
-	require.ErrorContains(t, err, "sweeping grant "+badFamily)
-	require.ErrorContains(t, err, "listing grants")
 }

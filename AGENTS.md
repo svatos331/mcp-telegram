@@ -64,11 +64,12 @@ context loading); admin and posting features are secondary. Two transports:
 ## Commands
 
 ```bash
-make build             # binary with version ldflags
-make test              # go test ./... (unit only)
-make test-integration  # real Telegram account; needs TEST_* vars from .env.example
-make lint              # golangci-lint run
-make fmt               # golangci-lint fmt
+task build             # binary with version ldflags
+task test              # go test ./... (unit only; no Docker)
+task test-firestore    # Docker-backed Firestore contracts
+task test-integration  # real Telegram account; needs TEST_* vars from .env.example
+task lint              # pinned lint for host/Linux, normal/tagged code
+task fmt               # pinned golangci-lint fmt
 ```
 
 ## Gotchas
