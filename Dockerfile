@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 
-# Stamp the version the same way the Makefile does so the container binary
+# Stamp the version the same way Taskfile.yml does so the container binary
 # self-reports a real version instead of "dev".
 ARG VERSION=docker
 RUN go build -ldflags="-s -w -X github.com/tolmachov/mcp-telegram/internal.Version=${VERSION}" -o mcp-telegram .
@@ -28,6 +28,6 @@ COPY --from=builder /app/mcp-telegram /usr/local/bin/mcp-telegram
 # The Telegram session and file-backed config live under the home directory.
 # Mount a volume at /home/app to persist login across container restarts.
 # In HTTP mode (MCP_TRANSPORT=http + MCP_AUTH_* env) no volume is needed:
-# per-user sessions live in the configured GCS bucket.
+# per-user sessions and OAuth state live in the configured Firestore database.
 ENTRYPOINT ["mcp-telegram"]
 CMD ["run"]

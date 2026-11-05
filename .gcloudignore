@@ -4,6 +4,10 @@
 .git
 .github
 .gocache
+.ralph
+Taskfile.local.yml
+deploy/cloudrun.yaml
+__pycache__/
 mcp-telegram
 *.txt
 .env

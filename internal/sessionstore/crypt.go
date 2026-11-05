@@ -116,7 +116,7 @@ func (sc *sessionCipher) open(blob []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// Encrypted wraps a backend (FS, GCS) so that it only ever sees AEAD
+// Encrypted wraps a backend (FS, Firestore) so that it only ever sees AEAD
 // ciphertext, and is the only way to obtain a Store. Every session id and
 // grant family a caller presents is therefore validated here: a token-derived
 // value must not become an object-name or file-path suffix unchecked, and the

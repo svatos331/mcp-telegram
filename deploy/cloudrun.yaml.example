@@ -3,7 +3,8 @@ MCP_TRANSPORT: http
 
 MCP_AUTH_ISSUER_URL: https://mcp-telegram-XXXXXXXX-ew.a.run.app
 MCP_AUTH_ALLOWED_USERS: "123456789"
-MCP_AUTH_SESSION_BUCKET: my-mcp-telegram-sessions
+MCP_AUTH_FIRESTORE_PROJECT: my-project
+MCP_AUTH_FIRESTORE_DATABASE: mcp-telegram
 # Keep zero unless the complete deployed proxy chain has been verified.
 MCP_AUTH_TRUSTED_PROXY_HOPS: "0"
 

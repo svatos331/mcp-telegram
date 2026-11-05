@@ -9,14 +9,15 @@ refresh-token family. There is no unauthenticated HTTP mode.
 ```bash
 PROJECT=my-project
 REGION=europe-west1
-BUCKET=my-mcp-telegram-sessions
+DATABASE=mcp-telegram
 SA=mcp-telegram@${PROJECT}.iam.gserviceaccount.com
 
-gcloud storage buckets create gs://${BUCKET} --location=${REGION} \
-  --uniform-bucket-level-access
-gcloud iam service-accounts create mcp-telegram
-gcloud storage buckets add-iam-policy-binding gs://${BUCKET} \
-  --member=serviceAccount:${SA} --role=roles/storage.objectAdmin
+gcloud firestore databases create --project=${PROJECT} --database=${DATABASE} \
+  --location=${REGION} --type=firestore-native
+gcloud iam service-accounts create mcp-telegram --project=${PROJECT}
+gcloud projects add-iam-policy-binding ${PROJECT} \
+  --member=serviceAccount:${SA} --role=roles/datastore.user \
+  --condition="expression=resource.name == 'projects/${PROJECT}/databases/${DATABASE}',title=mcp-telegram-database"
 
 printf '%s' "$MCP_TELEGRAM_API_HASH" | \
   gcloud secrets create mcp-telegram-api-hash --data-file=-
@@ -29,7 +30,7 @@ done
 ```
 
 Copy `deploy/cloudrun.yaml.example` to the untracked
-`deploy/cloudrun.yaml`, fill in the bucket, allowlist, API ID, and issuer URL.
+`deploy/cloudrun.yaml`, fill in the Firestore project/database, allowlist, API ID, and issuer URL.
 Keep the `.yaml` extension: `--env-vars-file` picks its parser from the file
 name, and a path ending in `.env` is read as dotenv (`KEY=value`) rather than
 as the YAML mapping this file uses.
@@ -79,12 +80,45 @@ in the actual proxy chain.
 - A storage failure returns `503`; it does not consume or rotate the grant.
 - Session encryption requires both the server master key and the random
   per-authorization key carried by the OAuth token.
-- Current objects use `sessions-v3/`, `revoked-v3/`, and `oauth-v3/grants/`.
-  Older prefixes are never read.
+- Firestore uses `sessions-v3`, `revoked-v3` and `oauth-v3-grants` collections.
+  Session/tombstone IDs are `<userID>.<sid>.bin`; grant IDs are the family ID.
+  Sessions contain `data` (ciphertext bytes) and `updated_at` (timestamp).
+  Tombstones contain `updated_at`; grants contain `data` (the grant JSON bytes)
+  and `expires_at` (timestamp). No client token or per-session key is persisted.
+- Grant writes compare the document version within a Firestore transaction.
+  Expiry remains checked by the application; a delayed TTL deletion must never
+  be treated as an authorization check. The existing sweeper handles cleanup.
+- The run command keeps the Firestore client open during the bounded HTTP drain
+  and releases it after the HTTP/auth/user-pool shutdown sequence. Startup
+  failures also release the client.
 
-## Breaking upgrade
+## Storage backend changes and rollback
 
-This release intentionally has no migration path. Before deployment, record a
+The GCS backend is removed. Keep the issuer and master-key secret versions
+unchanged when updating an existing Firestore deployment.
+
+After Firestore accepts writes, an old GCS snapshot is stale: traffic-only
+rollback can revive revoked grants or lose new logins. Stop the service and
+reconcile current state before using an older backend; never point an old
+revision at a stale bucket blindly.
+
+## Firestore contract tests
+
+Run `task test-firestore` or
+`go test -tags=firestoreintegration -race -count=1 -p=1 ./...`.
+Tagged `TestMain` functions use Testcontainers to own one Docker emulator per test
+binary, or reuse an explicit `FIRESTORE_EMULATOR_HOST` without stopping it. Docker
+is required for automatic startup; gcloud and Java run inside the pinned
+multi-platform image, not on the host. `-p=1` keeps the JVMs sequential. Ordinary
+`go test ./...` does not start containers or require Docker.
+
+CI and `task check` run the tagged Go suite uncached with `-count=1` so results
+come from the current emulator run. Tests never use real Firestore when the
+emulator variable is absent.
+
+## Older session-format breaking upgrade
+
+Pre-v3 formats intentionally have no migration path. Before deployment, record a
 rollback image digest and preserve the old storage long enough to roll back.
 After committing to the new release:
 
@@ -102,5 +136,5 @@ storage prefixes. Do not point an older binary at the v3 prefixes.
 
 Do not promote unless Linux/macOS tests, race tests, vet, lint, `govulncheck`,
 module verification, Windows cross-build, container build/scan, and the manual
-Telegram smoke all pass. Also verify that the v3 prefixes contain only current
-objects and that rollback instructions/image digest are recorded.
+Telegram smoke all pass. Also verify that the v3 collections contain only current
+documents and that rollback instructions/image digest are recorded.

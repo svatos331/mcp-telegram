@@ -31,12 +31,12 @@
 go install github.com/tolmachov/mcp-telegram@latest
 ```
 
-Or build from source:
+Or build from source with [Task](https://taskfile.dev/installation/):
 
 ```bash
 git clone https://github.com/tolmachov/mcp-telegram.git
 cd mcp-telegram
-make
+task build
 ```
 
 ## Setup
@@ -356,7 +356,8 @@ resolve as CLI flags → process environment → defaults. The binary never read
 | `MCP_AUTH_TOKEN_KEYS` | Base64 32-byte master keys, first seals and all verify | - |
 | `MCP_AUTH_ALLOWED_REDIRECTS` | Extra exact HTTPS redirect URIs | - |
 | `MCP_AUTH_TRUSTED_PROXY_HOPS` | Trusted rightmost proxy hops; zero ignores forwarding headers | `0` |
-| `MCP_AUTH_SESSION_BUCKET` / `MCP_AUTH_SESSION_DIR` | Exactly one HTTP session backend | - |
+| `MCP_AUTH_FIRESTORE_PROJECT` / `MCP_AUTH_FIRESTORE_DATABASE` | Firestore project and explicit database ID for HTTP storage | - |
+| `MCP_AUTH_SESSION_DIR` | Local HTTP storage directory, instead of Firestore | - |
 
 `.env.example` is documentation only. Export values in the actual server
 process, pass flags, or use `config set` for supported credentials. On Cloud
@@ -377,7 +378,7 @@ Telegram account — over the network.
 | Transport | stdio pipe | HTTP on one endpoint (`POST` for requests, `GET` for the SSE stream) |
 | Users | single account on the host | many, isolated per OAuth authorization |
 | Auth | local process boundary; no OAuth | mandatory embedded OAuth 2.1 + Telegram QR login |
-| Session storage | Keychain / local file | encrypted per-user blobs in a GCS bucket or a directory |
+| Session storage | Keychain / local file | encrypted per-user blobs in Firestore or a directory |
 | Use for | local desktop clients | a shared or hosted server |
 
 ### How authorization works
@@ -401,11 +402,11 @@ least-recently-used assembly is evicted and rebuilt on demand. Sessions are
 **encrypted at rest** with AES-256-GCM under a **split key**: the key is derived
 from *both* `MCP_AUTH_TOKEN_KEYS` *and* a random per-session key that lives only
 inside the client's OAuth access/refresh token (never stored server-side). As a
-result, an at-rest dump of the bucket **plus** the secret manager cannot, on its
+result, an at-rest dump of the database **plus** the secret manager cannot, on its
 own, decrypt a session — a live token is also required. (Trade-offs, stated
 plainly: this does not protect against a compromise of the running server's
 memory. And because the per-session key share travels inside the token, an
-attacker who holds the bucket **and** the master key **and** captures **one**
+attacker who holds the database **and** the master key **and** captures **one**
 access token can decrypt that single session — and thereby extract its
 persistent MTProto auth key, which outlives the ≤55-minute token and keeps
 working until the session is revoked or logged out. That exposure is confined to
@@ -461,10 +462,11 @@ only as private as its URL; `*` cannot be combined with specific ids).
 ### Deploy to Google Cloud Run
 
 The production target is Cloud Run: one container, scale-to-zero, secrets from
-Secret Manager, sessions in a GCS bucket. In outline:
+Secret Manager, sessions and OAuth state in a dedicated Firestore database. In outline:
 
-1. **Create a bucket** for the encrypted per-user sessions and a dedicated
-   service account with `roles/storage.objectAdmin` on just that bucket.
+1. **Create a Firestore Native database** and a dedicated service account with
+   `roles/datastore.user`, restricted to that database using an IAM condition.
+   The Go server SDK uses IAM, not Firebase Security Rules.
 2. **Store two secrets** in Secret Manager — the Telegram `api_hash` and a
    freshly generated 32-byte `MCP_AUTH_TOKEN_KEYS`
    (`head -c 32 /dev/urandom | base64`) — and grant the service account
@@ -551,9 +553,10 @@ Telegram account: keep the OS account trusted, use an encrypted filesystem
 backup.
 
 HTTP mode does not use the local stdio session. It requires exactly one backend
-(`MCP_AUTH_SESSION_BUCKET` or `MCP_AUTH_SESSION_DIR`) and stores encrypted,
-per-authorization objects under `sessions-v3/`, durable revocation tombstones
-under `revoked-v3/`, and OAuth state under `oauth-v3/`. Session decryption
+(both `MCP_AUTH_FIRESTORE_PROJECT` and `MCP_AUTH_FIRESTORE_DATABASE`, or
+`MCP_AUTH_SESSION_DIR`). Firestore collections are `sessions-v3`, `revoked-v3`
+and `oauth-v3-grants`; local directories are `sessions-v3/`, `revoked-v3/` and
+`oauth-v3-grants/`. The old GCS backend is removed. Session decryption
 requires both the server token key and the per-authorization key carried inside
 the sealed client token.
 
@@ -577,10 +580,12 @@ binary, environment, and storage prefixes together.
 ## Development
 
 ```bash
-make build            # build the binary with version metadata
-make lint             # golangci-lint
-make test             # unit tests
-make test-integration # end-to-end tests (need a real account + TEST_* vars)
+task build            # build the binary with version metadata
+task lint             # pinned golangci-lint
+task test             # unit tests, no Docker
+task test-firestore   # Docker-backed Firestore contracts
+task test-integration # end-to-end tests (need a real account + TEST_* vars)
+task check            # all automated release gates; never deploys
 
 # Production acceptance checks used by CI
 go test -race ./...
@@ -590,6 +595,10 @@ govulncheck ./...
 go mod verify
 ```
 
+`Taskfile.yml` contains shared development and release-check tasks. An optional,
+untracked `Taskfile.local.yml` is loaded under the `local` namespace for personal
+automation; Cloud Run settings and credentials do not belong in the shared file.
+
 Unit tests run without credentials. The integration suite in `test/` is behind
 the `integration` build tag and drives the server over a real stdio pipe using a
 second MCP implementation (mark3labs/mcp-go) as the client, to catch wire-level
@@ -597,7 +606,13 @@ interop issues. It reads the `TEST_*` variables documented in `.env.example`
 (e.g. `TEST_CHAT_ID`, `TEST_GROUP_ID`) and skips any test whose variable or
 Telegram credentials are unset.
 
-CI runs ordinary tests on Linux and macOS, the race detector, package coverage
+The separate `firestoreintegration` tag enables Testcontainers-backed Firestore
+contracts. `TestMain` starts one disposable emulator per test binary and cleans it
+up afterwards; an explicit `FIRESTORE_EMULATOR_HOST` is reused without being
+stopped. Use `-count=1` so tests run against a fresh emulator rather than reusing
+cached Go results. The Docker image is pinned for amd64/arm64; host gcloud and Java are not needed.
+
+CI runs ordinary tests on Linux and macOS, Docker-backed Firestore contracts, the race detector, package coverage
 gates, vet, golangci-lint, govulncheck, a Windows cross-build, and a pinned
 Docker build followed by a HIGH/CRITICAL vulnerability scan. The release image
 uses digest-pinned Go 1.27.3 and Alpine 3.24.3 images with security updates.

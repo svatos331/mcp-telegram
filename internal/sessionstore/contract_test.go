@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -38,11 +39,14 @@ func stores(t *testing.T) map[string]sessionstore.Store {
 	cipher := sessionstore.NewCipher(ring, "https://mcp.example.com")
 	fs, err := sessionstore.NewFS(filepath.Join(t.TempDir(), "sessions"))
 	require.NoError(t, err)
-	return map[string]sessionstore.Store{
+	all := map[string]sessionstore.Store{
 		"memory": sessionstoretest.New(t),
 		"fs":     sessionstore.Encrypted(fs, cipher),
-		"gcs":    sessionstore.Encrypted(sessionstore.NewTestGCS(t), cipher),
 	}
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") != "" {
+		all["firestore"] = sessionstore.Encrypted(sessionstore.NewTestFirestore(t), cipher)
+	}
+	return all
 }
 
 func TestGrantStoreContract(t *testing.T) {

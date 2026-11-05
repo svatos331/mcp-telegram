@@ -6,10 +6,10 @@
 // over a single object.
 //
 // Encrypted is the only way to obtain a Store: it validates every session id
-// and grant family before a backend sees it, and backends (FS, GCS) hold AEAD
+// and grant family before a backend sees it, and backends (FS, Firestore) hold AEAD
 // ciphertext only. The v3 key is derived from BOTH the MCP_AUTH_TOKEN_KEYS
 // master keys AND a random per-session key that lives only inside the
-// client's OAuth token (never persisted here), so a leaked bucket + secret
+// client's OAuth token (never persisted here), so leaked storage + secret
 // manager, without a live token, cannot decrypt a session. Earlier formats
 // and empty session ids are intentionally unreadable.
 //
@@ -189,15 +189,15 @@ type Store interface {
 	encrypted()
 }
 
-// backend is a storage backend (FS, GCS, the test memory store): it keeps
+// backend is a storage backend (FS, Firestore, the test memory store): it keeps
 // ciphertext blobs under ids Encrypted has already validated. The session
 // methods mean what they mean on Store; Session takes no key because a backend
 // never decrypts. For grants a backend offers only the compare-and-swap the
 // Store's grant rules are built on: LoadGrant returns family's record and an
 // opaque non-zero version (0: no record), and StoreGrant writes a record only
 // if the stored version still equals version (0: only if none exists),
-// returning ErrGrantConflict otherwise — a *GrantConflictError when the
-// backend knows its write did not land.
+// returning ErrGrantConflict otherwise. A *GrantConflictError includes the
+// current record and version the backend compared against.
 type backend interface {
 	Session(userID tgid.UserID, sid string) session.Storage
 	Exists(ctx context.Context, userID tgid.UserID, sid string) (bool, error)
@@ -270,17 +270,15 @@ func (g GrantRecord) rotate(expected int64) (GrantRecord, GrantRotation) {
 // grant record does not decode.
 var errUndecodableGrant = errors.New("sessionstore: parsing grant")
 
-// ErrGrantConflict is returned by a backend's StoreGrant when the record
-// changed since it was loaded (or already exists, for a create). A backend
-// that cannot compare and write in one step may also return it for a write
-// that landed after all (a GCS retry of a request whose response was lost
-// answers 412), so on its own it does not say the write failed.
+// ErrGrantConflict means the compared version was stale (or the record already
+// existed for a create). An SDK may report this after retrying a committed write
+// whose reply was lost, so it does not establish that the logical write failed.
 var ErrGrantConflict = errors.New("sessionstore: grant changed concurrently")
 
-// GrantConflictError is the ErrGrantConflict of a backend that compared and
-// refused in one step, so its write definitely did not land. It carries the
-// record the write was compared against (Version 0: none), which the grant
-// rules retry on without reading it again.
+// GrantConflictError carries the current record seen by a refused CAS
+// (Version 0: none). An earlier internal attempt may have committed the same
+// WriteID, so callers must check it before retrying. Otherwise the snapshot
+// lets the grant rules retry without reading it again.
 type GrantConflictError struct {
 	Current GrantRecord
 	Version int64
@@ -387,12 +385,10 @@ func updateGrant(ctx context.Context, b backend, family string, change func(Gran
 // writeGrant stores grant at version under a fresh WriteID and reports
 // whether it is now the stored record; when it is not, another writer got
 // there first and current/currentVersion are the record that writer left. A
-// *GrantConflictError settles the outcome by itself. Any other failed write
-// is settled by re-reading: a write can land and still report failure (a GCS
-// retry of a request whose response was lost answers 412, a transport error
-// can follow a committed upload), and finding its own WriteID in the store is
-// what tells that apart from a lost race. When the re-read fails too, the
-// outcome is unknown and the error carries both.
+// *GrantConflictError supplies the current record directly; other failures
+// require a re-read. In either case our WriteID establishes success, including
+// after an SDK internally retries a commit whose reply was lost. When the
+// re-read fails too, the outcome is unknown and the error carries both.
 func writeGrant(ctx context.Context, b backend, family string, grant GrantRecord, version int64) (stored bool, current GrantRecord, currentVersion int64, err error) {
 	grant.WriteID = rand.Text()
 	err = b.StoreGrant(ctx, family, grant, version)
@@ -400,6 +396,9 @@ func writeGrant(ctx context.Context, b backend, family string, grant GrantRecord
 		return true, GrantRecord{}, 0, nil
 	}
 	if conflict, ok := errors.AsType[*GrantConflictError](err); ok {
+		if conflict.Current.WriteID == grant.WriteID {
+			return true, GrantRecord{}, 0, nil
+		}
 		return false, conflict.Current, conflict.Version, nil
 	}
 	current, currentVersion, loadErr := b.LoadGrant(ctx, family)

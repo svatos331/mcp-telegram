@@ -53,16 +53,16 @@ func resolveCredentials(cmd *cli.Command) (*tgclient.Config, error) {
 	}, nil
 }
 
-// buildAuthOptions assembles the mandatory OAuth configuration for HTTP.
-func buildAuthOptions(ctx context.Context, cmd *cli.Command) (*authsrv.Config, sessionstore.Store, error) {
+// buildAuthOptions assembles HTTP auth and returns its optional storage cleanup.
+func buildAuthOptions(ctx context.Context, cmd *cli.Command) (*authsrv.Config, sessionstore.Store, func() error, error) {
 	allow, err := authsrv.ParseAllowlist(cmd.StringSlice(flags.AuthAllowedUsers))
 	if err != nil {
-		return nil, nil, fmt.Errorf("--%s: %w", flags.AuthAllowedUsers, err)
+		return nil, nil, nil, fmt.Errorf("--%s: %w", flags.AuthAllowedUsers, err)
 	}
 
 	keys, err := keyring.Parse(cmd.StringSlice(flags.AuthTokenKey))
 	if err != nil {
-		return nil, nil, fmt.Errorf("--%s: %w", flags.AuthTokenKey, err)
+		return nil, nil, nil, fmt.Errorf("--%s: %w", flags.AuthTokenKey, err)
 	}
 
 	// authsrv.New validates the rest of the configuration when the HTTP
@@ -75,26 +75,27 @@ func buildAuthOptions(ctx context.Context, cmd *cli.Command) (*authsrv.Config, s
 		TrustedProxyHops: cmd.Int(flags.AuthTrustedProxyHops),
 	}
 
-	bucket := cmd.String(flags.AuthSessionBucket)
+	project := cmd.String(flags.AuthFirestoreProject)
+	database := cmd.String(flags.AuthFirestoreDatabase)
 	dir := cmd.String(flags.AuthSessionDir)
 	cipher := sessionstore.NewCipher(keys, cfg.IssuerURL)
 	switch {
-	case bucket != "" && dir != "":
-		return nil, nil, fmt.Errorf("--%s and --%s are mutually exclusive", flags.AuthSessionBucket, flags.AuthSessionDir)
-	case bucket != "":
-		gcs, err := sessionstore.NewGCS(ctx, bucket)
+	case (project != "" || database != "") && dir != "":
+		return nil, nil, nil, fmt.Errorf("cloud storage and --%s are mutually exclusive", flags.AuthSessionDir)
+	case project != "" || database != "":
+		fs, err := sessionstore.NewFirestore(ctx, project, database)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return cfg, sessionstore.Encrypted(gcs, cipher), nil
+		return cfg, sessionstore.Encrypted(fs, cipher), fs.Close, nil
 	case dir != "":
 		fs, err := sessionstore.NewFS(dir)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return cfg, sessionstore.Encrypted(fs, cipher), nil
+		return cfg, sessionstore.Encrypted(fs, cipher), nil, nil
 	default:
-		return nil, nil, fmt.Errorf("HTTP requires exactly one of --%s / --%s", flags.AuthSessionBucket, flags.AuthSessionDir)
+		return nil, nil, nil, fmt.Errorf("HTTP requires --%s and --%s, or --%s", flags.AuthFirestoreProject, flags.AuthFirestoreDatabase, flags.AuthSessionDir)
 	}
 }
 
@@ -134,11 +135,12 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					flags.AuthAllowedUsersFlag(),
 					flags.AuthTokenKeyFlag(),
 					flags.AuthAllowedRedirectsFlag(),
-					flags.AuthSessionBucketFlag(),
+					flags.AuthFirestoreProjectFlag(),
+					flags.AuthFirestoreDatabaseFlag(),
 					flags.AuthSessionDirFlag(),
 					flags.AuthTrustedProxyHopsFlag(),
 				},
-				Action: func(ctx context.Context, cmd *cli.Command) error {
+				Action: func(ctx context.Context, cmd *cli.Command) (retErr error) {
 					// Credential validation is intentionally NOT performed here.
 					// Server.Run handles missing/invalid credentials itself: over
 					// stdio it serves login-required mode, which names the problem
@@ -157,10 +159,15 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					transport := cmd.String(flags.Transport)
 					var authCfg *authsrv.Config
 					var store sessionstore.Store
+					var cleanup func() error
 					if transport == server.TransportHTTP {
-						authCfg, store, err = buildAuthOptions(ctx, cmd)
+						authCfg, store, cleanup, err = buildAuthOptions(ctx, cmd)
 						if err != nil {
 							return err
+						}
+						if cleanup != nil {
+							// Run drains HTTP and closes auth/pool consumers before storage cleanup.
+							defer func() { retErr = errors.Join(retErr, cleanup()) }()
 						}
 					}
 					httpAddr, err := config.ResolveHTTPAddr(cmd.String(flags.HTTPAddr), cmd.IsSet(flags.HTTPAddr), os.LookupEnv)
