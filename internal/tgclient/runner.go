@@ -85,8 +85,6 @@ func startClient(ctx context.Context, cfg *Config, storage session.Storage, logg
 	base.Logger = gotdLogger(logger)
 	base.OnDead = r.connDead
 	base.Middlewares = []telegram.Middleware{r.refusalWatch()}
-	client := newClient(ctx, cfg, storage, logger, base)
-	r.api = tg.NewClient(r.stopWatch(client))
 
 	// ready closes once the readiness check has passed. A check that fails
 	// ends the Run loop with its error, which goes through stop like any
@@ -95,6 +93,9 @@ func startClient(ctx context.Context, cfg *Config, storage session.Storage, logg
 	ready := make(chan struct{})
 	go func() {
 		defer close(r.done)
+		// Loading the saved DC list must share the startup timeout's cancellation.
+		client := newClient(lifetime, cfg, storage, logger, base)
+		r.api = tg.NewClient(r.stopWatch(client))
 		err := client.Run(lifetime, func(ctx context.Context) error {
 			self, err := client.Self(ctx)
 			if err != nil {
